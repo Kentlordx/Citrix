@@ -1,0 +1,22 @@
+ Write-host "FSlogix Office 365 oppsett" -ForegroundColor Yellow
+If(Test-Path -Path "C:\Program Files\FSLogix\Apps")
+{ Write-Host 'fslogix oppsett' -ForegroundColor Yellow
+$fslogix = "HKLM:\Software\Policies\FSLogix"
+$fslogixapps = "HKLM:\Software\FSLogix\Apps"
+$fslogixODFC = "HKLM:\Software\FSLogix\ODFC"
+$fslogixPoliciesODFC = "HKLM\Software\Policies\FSLogix\ODFC"
+
+New-Item -Path $fslogix -Force
+New-ItemProperty -Path $fslogix -PropertyType DWORD -name ConcurrentUserSessions -value 1 | out-null
+New-ItemProperty -Path $fslogix -PropertyType DWORD -name RoamSearch -value 1 | out-null
+
+New-Item -Path $fslogixapps -Force
+New-ItemProperty -Path $fslogixapps -PropertyType DWORD -name RoamSearch -value 2 | out-null
+
+New-Item -Path $fslogixODFC -Force
+New-ItemProperty -Path $fslogixODFC -PropertyType DWORD -name RoamSearch -value 2 | out-null
+
+New-Item -Path $fslogixPoliciesODFC -Force
+New-ItemProperty -Path $fslogixPoliciesODFC -PropertyType DWORD -name RoamSearch -value 2 | out-null
+
+} 
