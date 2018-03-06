@@ -1,0 +1,171 @@
+ ####***************************####
+# Trend Antivirus oppsett
+Write-host 'Forbanna Trend Antivirus' -ForegroundColor Red
+    $trendServerShare = '\\server\ofcscan\Admin\Utility'
+    $trendClient = 'C:\Program Files (x86)\Trend Micro\OfficeScan Client'
+	$product = "Trend Micro Office Scan"
+	# The main 4 services are:
+	# - TmListen (OfficeScan NT Listener)
+	# - NTRTScan (OfficeScan NT RealTime Scan)
+	# - TmPfw (OfficeScan NT Firewall)
+	# - TmProxy (OfficeScan NT Proxy Service)
+	$TMServices = @("TmListen","NTRTScan","TmProxy","TmPfw")
+	$TMProcesses = @("TmListen.exe","NTRTScan.exe","TmProxy.exe","TmPfw.exe","PccNTMon.exe")
+Write-host "setter opp imgsetup.exe for generering av GUID" -ForegroundColor Yellow
+    New-Item c:\trend\trend -ItemType directory
+    Copy-Item $trendServerShare\ImgSetup\imgsetup.exe "c:\trend\trend"
+    Set-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\TmPreFilter\Parameters -Name  EnableMiniFilter -Value "1"
+
+Write-host "scan av Image" -ForegroundColor Yellow
+CD $trendclient
+start-process $trendclient\WofieLauncher.exe -ArgumentList "-manual_scan_target c"
+Start-sleep -Seconds 120
+Stop-Process -ProcessName WofieLauncher
+CD \
+
+# to funskjoner som stopper trend fra å kjøre
+Function TerminateProcess
+    {
+        ForEach ($ProcessName in $TMProcesses)
+		{
+		 	write-host "Process '$ProcessName' is running, kill process now" -foregroundcolor DarkCyan
+		 	$CommandLineContains = ""
+		 	$delaystart = 0
+		 	$interval = 1
+		 	$repeat = 5
+		 	$exitwhenfound = $True
+		 	Start-Sleep -Seconds $delaystart
+		 	if ([String]::IsNullOrEmpty($CommandLineContains)) {
+		 	  #Write-Verbose "Killing the '$ProcessName' process..." -verbose
+		 	} Else {
+		 	  #Write-Verbose "Killing the '$ProcessName' process which contains `"$CommandLineContains`" in it's command line..." -verbose
+		 	}
+		 	Do {
+		 	  $i = 0
+		 	  Do {
+		 	    $ProcessFound = $False
+		 	    Try {
+		 	      $Processes = Get-WMIObject Win32_Process -Filter "name='$ProcessName'" -ErrorAction Stop | Where-Object {$_.commandline -Like "*$CommandLineContains*"}
+		 	    }
+		 	    Catch {
+		 	      #write-verbose $_.Exception.InnerException.Message -verbose
+		 	    }
+		 	    If (($Processes | Measure-Object).Count -gt 0) {
+		 	      $ProcessFound = $True
+		 	    }
+		 	    $i++
+		 	    If ($i -eq $repeat) {
+		 	      break 
+		 	    }
+		 	    Start-Sleep -Seconds $interval
+		 	  } Until ($ProcessFound -eq $true)
+		 	  If ($ProcessFound) {
+		 	    #write-verbose "Process '$ProcessName' was found." -verbose
+		 	    if (!([String]::IsNullOrEmpty($CommandLineContains))) {
+		 	      #write-verbose "Process command line contains: '$CommandLineContains'" -verbose
+		 	    }
+		 	    ForEach ($Process in $Processes) {
+		 	      Try {
+		 	        $Return = ([wmi]$Process.__RELPATH).terminate()
+		 	        If ($Return.ReturnValue -eq 0) {
+		 	          #write-verbose "Process terminated without error." -verbose
+		 	        } Else {
+		 	          #write-verbose "Process failed to terminate: $($Return.ReturnValue)" -verbose
+		 	        }
+		 	      }
+		 	      Catch {
+		 	        #write-verbose $_.Exception.Message -verbose
+		 	      }
+		 	    }
+		 	  } Else {
+		 	    If ($exitwhenfound) {
+		 	      #write-verbose "Process '$ProcessName' was not found. Giving up!" -verbose
+		 	      write-host "Process '$ProcessName' was not found. Giving up!"
+		 	    } Else {
+		 	      #write-verbose "Process '$ProcessName' was not found. Trying again!" -verbose
+		 	      write-host "Process '$ProcessName' was not found. Trying again!"
+		 	    }
+		 	  }
+		 	} Until ($exitwhenfound -eq $true)
+		}
+    }
+
+    function StopService
+    {
+        ForEach ($ServiceName in $TMServices)
+		{
+			$objService = Get-Service $ServiceName -ErrorAction SilentlyContinue
+			If ($objService)
+			{
+			 	write-host "Setting the '$ServiceName' service to manual start" -foregroundcolor DarkCyan
+		 	        #Write-Verbose "Setting the '$ServiceName' service to manual start..." -verbose
+				#Invoke-BISFService -ServiceName "$($ServiceName)" -Action Stop -StartType manual
+				# Possible results using the sc.exe command line tool:
+				#   [SC] ChangeServiceConfig2 SUCCESS
+				#   [SC] OpenSCManager FAILED 5:  Access is denied.
+				#   [SC] OpenSCManager FAILED 1722:  The RPC server is unavailable.
+				#   [SC] OpenService FAILED 1060:  The specified service does not exist as an installed service.
+				$result = sc.exe config $ServiceName start= demand
+				#write-verbose $result -verbose
+			} Else {
+ 				write-host "Service '$ServiceName' is not installed"
+			}
+		}
+    }
+
+Write-Host "forsøker å stoppe Trend" -ForegroundColor Yellow
+
+#kjører funskjonene
+TerminateProcess
+
+StopService
+
+#rydder opp i Guider i registry
+$reg_TM_string = "$HKLM_sw_x86\TrendMicro\PC-cillinNTCorp\CurrentVersion"
+	[array]$reg_TM_name = "GUID"
+
+foreach ($key in $reg_TM_name)
+		{
+			Write-host "delete specified registry items in $reg_TM_string..." -ForegroundColor Cya
+			Write-host "delete $key" -ForegroundColor Cyan 
+			Remove-ItemProperty -Path $reg_TM_string -Name $key -ErrorAction SilentlyContinue
+		}
+
+ # Stopping multiple instances of PCCNTmon.exe processes running on the Terminal (RDS) server
+    # https://success.trendmicro.com/solution/1102736
+    function UpdateINIFile
+    {
+      $inifile = "${env:ProgramFiles(x86)}\Trend Micro\OfficeScan Client\ofcscan.ini"
+      If (TEST-PATH -Path "$inifile") {
+        Write-host "Updating $inifile" -ForegroundColor DarkCyan
+        $inicontents = Get-Content "$inifile"
+        $inicontents = $inicontents | ForEach-Object {$_ -replace '^NT_RUN_KEY=.+$', "NT_RUN_KEY="}
+        $inicontents = $inicontents | ForEach-Object {$_ -replace '^NT_RUN_KEY_FILE_NAME=.+$', "NT_RUN_KEY_FILE_NAME="}
+        $inicontents | Set-Content $inifile
+        # Note that you will get an access denied error when writing back to the ofcscan.ini file if the
+        # services/processes are still running.
+      }
+    }
+    function DeleteRunValue
+    {
+      $keypath = "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run"
+      $value = "OfficeScanNT Monitor"
+      $IsValueMissing = (Get-ItemProperty $keypath).$value -eq $null
+      If ($IsValueMissing -eq $False) {
+        Write-host "Removing the $value value from the Run key"-ForegroundColor DarkCyan
+        Remove-ItemProperty -path $keypath -name $value
+      }
+    }
+
+#kjører funksjonene
+UpdateINIFile
+DeleteRunValue
+
+# Sletter Trend sertifikat
+ $certs = Get-ChildItem cert:\LocalMachine\my | where { $_.Subject –like ‘CN=ofcsslagent’ }
+ foreach ($cert in $certs) {
+ $store = Get-Item $cert.PSParentPath
+ $store.Open(‘ReadWrite’)
+ $store.Remove($cert)
+ $store.Close()
+ } 
