@@ -1,1 +1,315 @@
+ $Source = '\\lordxorg\dfsroot\Distribusjon\XenDesktop7\Xendesktop_Sealing'
+$SystemDrive = get-content env:Systemdrive
+$Windir = get-content env:systemroot
+$ProgramData = get-content env:ProgramData
+$ProgramFiles = get-content env:ProgramFiles
+$ProgramFilesx86 = get-content env:'ProgramFiles(x86)'
+$ComputerName = get-content env:ComputerName
+$UserTemp = get-content env:Temp
+$Seal = "HKLM:\SOFTWARE\sicra\reseal"
+$date = get-date
+$PSScriptRoot
 
+pushd $PSScriptRoot
+Import-Module .\PSLogging\PSLogging.psm1
+popd
+
+$VerbosePreference = 'Continue' 
+$DebugPreference = 'Continue' 
+$LogFilePreference = 'c:\temp\tuning.log'
+$Logfil = Add-logfile -path $LogFilePreference
+
+## Scheduled TASK ##
+
+Import-Module ScheduledTasks
+
+Write-Host 'Sealing meny' -ForegroundColor Green
+# New-Item c:\temp -ItemType directory
+Copy-Item $PSScriptRoot\meny.ps1 c:\temp -recurse
+$F = "c:\temp\meny.ps1"
+$A = New-ScheduledtaskAction -execute "powershell.exe" -Argument "-noexit -executionpolicy bypass -file $F"
+$T = New-ScheduledTaskTrigger -atlogon 
+$S = New-ScheduledTaskSettingsSet
+$P = New-ScheduledTaskPrincipal -GroupId "BUILTIN\Administratorer" -RunLevel Highest
+$D = New-ScheduledTask -Action $A -Principal $P -Trigger $T -Settings $S
+Register-ScheduledTask Meny -InputObject $D
+
+　
+# FLEX licensing
+pushd $PSScriptRoot
+Copy-Item -Path .\flex\* -Destination $Windir\syswow64\ -Force
+popd
+
+Start-Process -FilePath 'regsvr32.exe' -Args "/s $Windir\syswow64\flexservice_win32.dll"
+
+##Server Tuning ##
+
+Write-Host 'Prevent Server manager and Powershell in Taskbar for users' -ForegroundColor Yellow
+ICACLS "$ProgramData\Microsoft\Windows\Start Menu\Programs\Accessories\Windows PowerShell" /T /inheritance:d
+ICACLS "$ProgramData\Microsoft\Windows\Start Menu\Programs\Accessories\Windows PowerShell" /T /remove:g "BUILTIN\Users" Everyone
+ICACLS "$ProgramData\Microsoft\Windows\Start Menu\Programs\Administrative Tools\Server Manager.lnk" /inheritance:d
+ICACLS "$ProgramData\Microsoft\Windows\Start Menu\Programs\Administrative Tools\Server Manager.lnk" /remove:g "BUILTIN\Users" Everyone
+ICACLS "$ProgramData\Microsoft\Windows\Start Menu\Programs\System Tools\Task Manager.lnk" /inheritance:d
+ICACLS "$ProgramData\Microsoft\Windows\Start Menu\Programs\System Tools\Task Manager.lnk\Server Manager.lnk" /remove:g "BUILTIN\Users" Everyone
+ICACLS "$ProgramData\Microsoft\Windows\Start Menu\Programs\System Tools\Windows PowerShell.lnk" /inheritance:d
+ICACLS "$ProgramData\Microsoft\Windows\Start Menu\Programs\System Tools\Task Manager\Windows PowerShell.lnk" /remove:g "BUILTIN\Users" Everyone
+
+# 'Noisy Logon'
+REG ADD "HKLM\SOFTWARE\WOW6432Node\Citrix\Logon" /V DisableStatus /T REG_DWORD /D 1 /F
+
+Write-Host 'IE Enhanced Security from System' -ForegroundColor Green
+REG ADD "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}" /v "IsInstalled" /t REG_DWORD /d 0 /f /reg:64
+REG ADD "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}" /v "IsInstalled" /t REG_DWORD /d 0 /f /reg:64
+
+# Removing IE Enhanced Security from System
+invoke-expression -command "Rundll32 iesetup.dll,IEHardenUser"
+invoke-expression -command "Rundll32 iesetup.dll,IEHardenAdmin"
+invoke-expression -command "Rundll32 iesetup.dll,IEHardenMachineNow"
+
+# Removes from Add Remove Components
+REG ADD "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\OC Manager\Subcomponents" /v "iehardenadmin" /t REG_DWORD /d 0 /f /reg:64
+REG ADD "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\OC Manager\Subcomponents" /v "iehardenuser" /t REG_DWORD /d 0 /f /reg:64
+
+# Remove the Values from the IEHarden installed components key
+REG DELETE "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}" /f /va /reg:64
+REG DELETE "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}" /f /va /reg:64
+
+Write-Host 'Disable Last Access Time Stamp' -ForegroundColor Green
+FSUTIL behavior set disablelastaccess 1
+
+# 'Powersettings tuning for VMs'
+Write-Host 'Powersettings tuning for VMs' -ForegroundColor Green
+Powercfg -setacvalueindex scheme_current sub_processor 45bcc044-d885-43e2-8605-ee0ec6e96b59 100
+Powercfg -setactive scheme_current
+Powercfg -setacvalueindex scheme_current sub_processor 893dee8e-2bef-41e0-89c6-b55d0929964c 100
+Powercfg -setactive scheme_current
+Powercfg -setacvalueindex scheme_current sub_processor bc5038f7-23e0-4960-96da-33abaf5935ec 100
+Powercfg -setactive scheme_current
+# hard disk timeout
+powercfg -setacvalueindex 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 0012ee47-9041-4b5d-9b77-535fba8b1442 6738e2c4-e8a5-4a42-b16a-e040e769756e 0
+powercfg -setdcvalueindex 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 0012ee47-9041-4b5d-9b77-535fba8b1442 6738e2c4-e8a5-4a42-b16a-e040e769756e 0 
+
+# Disable Disable TCP/IP / Large Send Offload
+New-ItemProperty -Path "HKLM:SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" -name 'DisableTaskOffload' -value '00000001' -PropertyType 'dword'
+
+# Increase service startup timeouts
+# New-ItemProperty -Path "HKLM:SYSTEM\CurrentControlSet\Control" -name 'ServicesPipeTimeout' -value '00002bf20' -PropertyType 'dword'
+
+# Clean run registry key
+reg delete 'HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run' /va /f
+
+Write-Host 'Turn off DEP' -ForegroundColor Green
+BCDEDIT /set "{current}" nx AlwaysOff
+
+Write-Host 'Disable the boot animation' -ForegroundColor Green
+BCDEDIT /set BOOTUX disabled
+
+Write-Host 'Set the Pagefile size on the Target Device' -ForegroundColor Green
+$ComputerSystem = Get-WmiObject Win32_computersystem -EnableAllPrivileges
+$ComputerSystem.AutomaticManagedPagefile = $false
+$ComputerSystem.Put()
+$PageFile = Get-WmiObject -class Win32_PageFileSetting
+$PageFile.InitialSize = 0
+$PageFile.MaximumSize = 0
+$PageFile.Put()
+
+Write-Host 'Enable Automount av disker' -ForegroundColor Green
+Mountvol /E
+
+# Running PVS Device Optimalization
+
+Write-Host 'Running PVS Device Optimalization' -ForegroundColor Green
+REG ADD HKLM\Software\Citrix\ProvisioningServices /v DeviceOptimizerRun /d 1 /t REG_DWORD /f /reg:64
+
+Write-Host 'Disable Offline Files' -ForegroundColor Yellow
+REG ADD HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\NetCache /v Enabled /d 0 /t REG_DWORD /f /reg:64
+
+Write-Host 'Disable Defrag BootOptimizeFunction' -ForegroundColor Yellow
+REG ADD HKLM\SOFTWARE\Microsoft\Dfrg\BootOptimizeFunction /v Enable /d "N" /t REG_SZ /f /reg:64
+
+Write-Host 'Disable Background Layout Service' -ForegroundColor Yellow
+REG ADD HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OptimalLayout /v EnableAutoLayout /d 0 /t REG_DWORD /f /reg:64
+
+Write-Host 'Disable Last Access Timestamp' -ForegroundColor Yellow
+REG ADD HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v NtfsDisableLastAccessUpdate /d 1 /t REG_DWORD /f /reg:64
+
+Write-Host 'Disable Hibernate' -ForegroundColor Yellow
+REG ADD "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power" /v HibernateEnabled /d 0 /t REG_DWORD /f /reg:64
+
+Write-Host 'Disable CrashDump' -ForegroundColor Yellow
+REG ADD HKLM\SYSTEM\CurrentControlSet\Control\CrashControl /v CrashDumpEnabled /d 0 /t REG_DWORD /f /reg:64
+REG ADD HKLM\SYSTEM\CurrentControlSet\Control\CrashControl /v LogEvent /d 0 /t REG_DWORD /f /reg:64
+REG ADD HKLM\SYSTEM\CurrentControlSet\Control\CrashControl /v SendAlert /d 0 /t REG_DWORD /f /reg:64
+
+Write-Host 'Disable Indexing Service' -ForegroundColor Yellow
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\cisvc /v Start /d 4 /t REG_DWORD /f /reg:64
+
+Write-Host 'Reduce Event Log Size to 64k' -ForegroundColor Yellow
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Eventlog\Application /v MaxSize /d 65536 /t REG_DWORD /f /reg:64
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Eventlog\Security /v MaxSize /d 65536 /t REG_DWORD /f /reg:64
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Eventlog\System /v MaxSize /d 65536 /t REG_DWORD /f /reg:64
+
+Write-Host 'Reduce IE Temp File' -ForegroundColor Yellow
+REG ADD "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Cache\Paths" /v Paths /d 4 /t REG_DWORD /f /reg:64
+REG ADD "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Cache\Paths\path1" /v CacheLimit /d 256 /t REG_DWORD /f /reg:64
+REG ADD "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Cache\Paths\path2" /v CacheLimit /d 256 /t REG_DWORD /f /reg:64
+REG ADD "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Cache\Paths\path3" /v CacheLimit /d 256 /t REG_DWORD /f /reg:64
+REG ADD "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Cache\Paths\path4" /v CacheLimit /d 256 /t REG_DWORD /f /reg:64
+
+Write-Host 'Disable Clear Page File at Shutdown' -ForegroundColor Yellow
+REG ADD "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v ClearPageFileAtShutdown /d 0 /t REG_DWORD /f /reg:64
+
+Write-Host 'Disable Machine Account Password Changes' -ForegroundColor Yellow
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters /v DisablePasswordChange /d 1 /t REG_DWORD /f /reg:64
+
+Write-Host 'Disable Vista/7 Windows Search' -ForegroundColor Yellow
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\WSearch /v Start /d 4 /t REG_DWORD /f /reg:64
+
+Write-Host 'Disable BITS og Shell Hardware detection' -ForegroundColor Yellow
+Get-Service bits,ShellHWDetection | where-object {$_.status -eq "running"} | Stop-Service -PassThru | Set-Service -StartupType Disabled 
+
+Write-Host 'Disable scheduled tasks' -ForegroundColor Yellow
+Get-ScheduledTask -TaskName aitagent,AnalyzeSystem,BfeOnServiceStartTypeChange,UPnPHostConfig | Disable-ScheduledTask
+
+Write-Host 'Get updates for other Microsoft Products' -ForegroundColor Yellow
+
+$mu = New-Object -ComObject Microsoft.Update.ServiceManager -Strict 
+$mu.AddService2("7971f918-a847-4430-9279-4a52d1efe18d",7,"")
+
+#Delete RDS Grace Period Registry Key
+Write-Host "Delete RDS Grace Period Registry Key" -ForegroundColor Yellow
+
+	$script_path = $MyInvocation.MyCommand.Path
+	$script_dir = Split-Path -Parent $script_path
+	$script_name = [System.IO.Path]::GetFileName($script_path)
+
+function enable-privilege {
+ param(
+  ## The privilege to adjust. This set is taken from
+  ## http://msdn.microsoft.com/en-us/library/bb530716(VS.85).aspx
+  [ValidateSet(
+   "SeAssignPrimaryTokenPrivilege", "SeAuditPrivilege", "SeBackupPrivilege",
+   "SeChangeNotifyPrivilege", "SeCreateGlobalPrivilege", "SeCreatePagefilePrivilege",
+   "SeCreatePermanentPrivilege", "SeCreateSymbolicLinkPrivilege", "SeCreateTokenPrivilege",
+   "SeDebugPrivilege", "SeEnableDelegationPrivilege", "SeImpersonatePrivilege", "SeIncreaseBasePriorityPrivilege",
+   "SeIncreaseQuotaPrivilege", "SeIncreaseWorkingSetPrivilege", "SeLoadDriverPrivilege",
+   "SeLockMemoryPrivilege", "SeMachineAccountPrivilege", "SeManageVolumePrivilege",
+   "SeProfileSingleProcessPrivilege", "SeRelabelPrivilege", "SeRemoteShutdownPrivilege",
+   "SeRestorePrivilege", "SeSecurityPrivilege", "SeShutdownPrivilege", "SeSyncAgentPrivilege",
+   "SeSystemEnvironmentPrivilege", "SeSystemProfilePrivilege", "SeSystemtimePrivilege",
+   "SeTakeOwnershipPrivilege", "SeTcbPrivilege", "SeTimeZonePrivilege", "SeTrustedCredManAccessPrivilege",
+   "SeUndockPrivilege", "SeUnsolicitedInputPrivilege")]
+  $Privilege,
+  ## The process on which to adjust the privilege. Defaults to the current process.
+  $ProcessId = $pid,
+  ## Switch to disable the privilege, rather than enable it.
+  [Switch] $Disable
+ )
+
+ ## Taken from P/Invoke.NET with minor adjustments.
+ $definition = @'
+ using System;
+ using System.Runtime.InteropServices;
+  
+ public class AdjPriv
+ {
+  [DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
+  internal static extern bool AdjustTokenPrivileges(IntPtr htok, bool disall,
+   ref TokPriv1Luid newst, int len, IntPtr prev, IntPtr relen);
+  
+  [DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
+  internal static extern bool OpenProcessToken(IntPtr h, int acc, ref IntPtr phtok);
+  [DllImport("advapi32.dll", SetLastError = true)]
+  internal static extern bool LookupPrivilegeValue(string host, string name, ref long pluid);
+  [StructLayout(LayoutKind.Sequential, Pack = 1)]
+  internal struct TokPriv1Luid
+  {
+   public int Count;
+   public long Luid;
+   public int Attr;
+  }
+  
+  internal const int SE_PRIVILEGE_ENABLED = 0x00000002;
+  internal const int SE_PRIVILEGE_DISABLED = 0x00000000;
+  internal const int TOKEN_QUERY = 0x00000008;
+  internal const int TOKEN_ADJUST_PRIVILEGES = 0x00000020;
+  public static bool EnablePrivilege(long processHandle, string privilege, bool disable)
+  {
+   bool retVal;
+   TokPriv1Luid tp;
+   IntPtr hproc = new IntPtr(processHandle);
+   IntPtr htok = IntPtr.Zero;
+   retVal = OpenProcessToken(hproc, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, ref htok);
+   tp.Count = 1;
+   tp.Luid = 0;
+   if(disable)
+   {
+    tp.Attr = SE_PRIVILEGE_DISABLED;
+   }
+   else
+   {
+    tp.Attr = SE_PRIVILEGE_ENABLED;
+   }
+   retVal = LookupPrivilegeValue(null, privilege, ref tp.Luid);
+   retVal = AdjustTokenPrivileges(htok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+   return retVal;
+  }
+ }
+'@
+
+　
+ $processHandle = (Get-Process -id $ProcessId).Handle
+ $type = Add-Type $definition -PassThru
+ $type[0]::EnablePrivilege($processHandle, $Privilege, $Disable)
+}
+
+　
+enable-privilege SeTakeOwnershipPrivilege 
+		#Take Ownership of Registry Key
+		$key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("SYSTEM\CurrentControlSet\Control\Terminal Server\RCM\GracePeriod",[Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,[System.Security.AccessControl.RegistryRights]::takeownership)
+		$acl = $key.GetAccessControl([System.Security.AccessControl.AccessControlSections]::None)
+		$me = [System.Security.Principal.NTAccount]"Builtin\Administratorer"
+		$acl.SetOwner($me)
+		$key.SetAccessControl($acl)
+
+		#Read current ACL and add rule for Builtin\Admnistrators
+		$acl = $key.GetAccessControl()
+		$rule = New-Object System.Security.AccessControl.RegistryAccessRule ("Builtin\Administratorer","FullControl","Allow")
+		$acl.SetAccessRule($rule)
+		$key.SetAccessControl($acl)
+		$key.Close()
+
+		#Search Timebomb Key and delete it
+		$items=$null
+		$item=$null
+
+		$Items = Get-Item "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\RCM\GracePeriod"
+		foreach ($item in $Items) {
+			if ($itemorgperty -like  "*TIMEBOMB*")  {
+				Remove-ItemProperty -path $Item.PSPath -Name $itemorgperty #-WhatIf
+			}
+		}
+
+#sett lisensmode og -server i registry
+Set-ItemProperty "hklm:\SYSTEM\CurrentControlSet\Control\Terminal Server\RCM\Licensing Core\" -Name "LicensingMode" -Value 4  
+ Get-ItemProperty "hklm:\SYSTEM\CurrentControlSet\Control\Terminal Server\RCM\Licensing Core\" -Name "LicensingMode"  
+ New-Item "hklm:\SYSTEM\CurrentControlSet\Services\TermService\Parameters\LicenseServers"
+ New-ItemProperty "hklm:\SYSTEM\CurrentControlSet\Services\TermService\Parameters\LicenseServers" -Name SpecifiedLicenseServers -Value vkms401.lordxorg -PropertyType "MultiString"  
+ Get-ItemProperty "hklm:\SYSTEM\CurrentControlSet\Services\TermService\Parameters\LicenseServers" -Name SpecifiedLicenseServers   
+  
+Write-Host ‘setter path i registry for mfahook64’ -ForegroundColor Green
+# Sett rett Path til MFAHOOK.dll #
+Set-ItemProperty -Path 'hklm:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows' -Name AppInit_DLLs -Value mfaphook64.dll
+Set-ItemProperty -Path 'hklm:\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Windows' -Name AppInit_DLLs -Value mfaphook.dll
+# To enable WPF applications (such as Autodesks’) to render using the server’s GPU
+New-ItemProperty -Path 'hklm:\SOFTWARE\Citrix\CtxHook\AppInit_Dlls\Multiple Monitor Hook' -name 'EnableWPFHook' -Value '00000001' -propertytype 'dword'
+New-ItemProperty -Path 'hklm:\SOFTWARE\Wow6432Node\Citrix\CtxHook\AppInit_Dlls\Multiple Monitor Hook' -name 'EnableWPFHook' -Value '00000001' -propertytype 'dword'
+#DirectX
+New-ItemProperty -Path 'HKLM:\SOFTWARE\Citrix\CtxHook\AppInit_Dlls\Graphics Helper' -name 'DirectX' -Value '00000000' -propertytype 'dword'
+New-ItemProperty -Path 'HKLM:\SOFTWARE\Wow6432Node\Citrix\CtxHook\AppInit_Dlls\Graphics Helper' -name 'DirectX' -Value '00000001' -propertytype 'dword'
+#Flash
+write-host 'Flash i IE' -foregroundcolor Green
+New-ItemProperty -Path "HKLM:SOFTWARE\Wow6432Node\Citrix\HdxMediaStreamForFlash\Server\PseudoServer" -name 'IEBrowserMaximumMajorVersion' -value '11' -PropertyType 'dword'
+New-ItemProperty -Path "HKLM:SOFTWARE\Wow6432Node\Citrix\HdxMediaStreamForFlash\Server\PseudoServer" -name 'DynamicBlacklistAgingPeriod' -value '00000001' -PropertyType 'dword'
+
+$logFile | Disable-LogFile
