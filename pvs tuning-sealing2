@@ -1,0 +1,710 @@
+ # Seal Master-image and convert to PVS
+import-module activedirectory
+
+$Source = '\\lordxorg\dfsroot\Distribusjon\Charlie\Citrix\XD7\Xendesktop_Sealing'
+$SystemDrive = get-content env:Systemdrive
+$Windir = get-content env:systemroot
+$ProgramData = get-content env:ProgramData
+$ProgramFiles = get-content env:ProgramFiles
+$ProgramFilesx86 = get-content env:'ProgramFiles(x86)'
+$ComputerName = get-content env:ComputerName
+$UserTemp = get-content env:Temp
+$Seal = "HKLM:\SOFTWARE\Sicra\reseal"
+$date = get-date
+
+#flytter server til Utviklings OU
+Write-Host 'Move server to Utvikling OU' -ForegroundColor Green
+get-adcomputer $ComputerName | Move-ADObject -TargetPath "OU=Utvikling,OU=Xendesktop7,OU=Xendesktop,DC=statsbygg,DC=pro"
+
+####***************************####
+# Fikser som vi har lagt til for å løse midlertidige problemer
+Write-host 'Midlertidige fikser' -ForegroundColor Green
+
+#This update fixes an issue in which some attachments to plain text messages are removed when you forward the message.
+Write-Host 'January 22, 2018, update for Outlook 2016 (KB4011123)' -ForegroundColor Yellow
+Start-Process "$source\temp_fikser\outlook2016-kb4011123-fullfile-x86-glb.exe" -ArgumentList "/passive /norestart" -Wait -ErrorAction Continue
+
+#Cognos må kopiere inn noen filer. Det skjer ved første start
+Write-host 'start Cognos og steng den igjen' -ForegroundColor Yellow
+& "C:\Program Files\IBM\Cognos Insight\cognosrcp.exe"
+Start-sleep -Seconds 120
+Stop-Process -ProcessName CognosInsight
+
+#Revit legger til noen ting under run som ikke skal være der
+Write-host 'Fjerne Revit greier'
+$ProcessActive = Get-Process RevitAccelerator -ErrorAction SilentlyContinue
+if($ProcessActive -eq $null)
+{
+ Write-host "Revit er OK" -ForegroundColor Yellow}
+else
+{
+ Stop-Process -processname RevitAccelerator
+Get-Item  -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run | Remove-ItemProperty -name pac
+Get-Item  -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run | Remove-ItemProperty -name nwiz
+Write-host "Revit er fikset" -ForegroundColor Yellow
+}
+
+####***************************####
+# Trend Antivirus oppsett
+Write-host 'Forbanna Trend Antivirus' -ForegroundColor Red
+    $trendServerShare = '\\vtos301\ofcscan\Admin\Utility'
+    $trendClient = 'C:\Program Files (x86)\Trend Micro\OfficeScan Client'
+	$product = "Trend Micro Office Scan"
+	# The main 4 services are:
+	# - TmListen (OfficeScan NT Listener)
+	# - NTRTScan (OfficeScan NT RealTime Scan)
+	# - TmPfw (OfficeScan NT Firewall)
+	# - TmProxy (OfficeScan NT Proxy Service)
+	$TMServices = @("TmListen","NTRTScan","TmProxy","TmPfw")
+	$TMProcesses = @("TmListen.exe","NTRTScan.exe","TmProxy.exe","TmPfw.exe","PccNTMon.exe")
+Write-host "setter opp imgsetup.exe for generering av GUID" -ForegroundColor Yellow
+    New-Item c:\trend\trend -ItemType directory
+    Copy-Item $trendServerShare\ImgSetup\imgsetup.exe "c:\trend\trend"
+    Set-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\TmPreFilter\Parameters -Name  EnableMiniFilter -Value "1"
+
+Write-host "scan av Image" -ForegroundColor Yellow
+CD $trendclient
+start-process $trendclient\WofieLauncher.exe -ArgumentList "-manual_scan_target c"
+Start-sleep -Seconds 120
+Stop-Process -ProcessName WofieLauncher
+CD \
+
+# to funskjoner som stopper trend fra å kjøre
+Function TerminateProcess
+    {
+        ForEach ($ProcessName in $TMProcesses)
+		{
+		 	write-host "Process '$ProcessName' is running, kill process now" -foregroundcolor DarkCyan
+		 	$CommandLineContains = ""
+		 	$delaystart = 0
+		 	$interval = 1
+		 	$repeat = 5
+		 	$exitwhenfound = $True
+		 	Start-Sleep -Seconds $delaystart
+		 	if ([String]::IsNullOrEmpty($CommandLineContains)) {
+		 	  #Write-Verbose "Killing the '$ProcessName' process..." -verbose
+		 	} Else {
+		 	  #Write-Verbose "Killing the '$ProcessName' process which contains `"$CommandLineContains`" in it's command line..." -verbose
+		 	}
+		 	Do {
+		 	  $i = 0
+		 	  Do {
+		 	    $ProcessFound = $False
+		 	    Try {
+		 	      $Processes = Get-WMIObject Win32_Process -Filter "name='$ProcessName'" -ErrorAction Stop | Where-Object {$_.commandline -Like "*$CommandLineContains*"}
+		 	    }
+		 	    Catch {
+		 	      #write-verbose $_.Exception.InnerException.Message -verbose
+		 	    }
+		 	    If (($Processes | Measure-Object).Count -gt 0) {
+		 	      $ProcessFound = $True
+		 	    }
+		 	    $i++
+		 	    If ($i -eq $repeat) {
+		 	      break 
+		 	    }
+		 	    Start-Sleep -Seconds $interval
+		 	  } Until ($ProcessFound -eq $true)
+		 	  If ($ProcessFound) {
+		 	    #write-verbose "Process '$ProcessName' was found." -verbose
+		 	    if (!([String]::IsNullOrEmpty($CommandLineContains))) {
+		 	      #write-verbose "Process command line contains: '$CommandLineContains'" -verbose
+		 	    }
+		 	    ForEach ($Process in $Processes) {
+		 	      Try {
+		 	        $Return = ([wmi]$Process.__RELPATH).terminate()
+		 	        If ($Return.ReturnValue -eq 0) {
+		 	          #write-verbose "Process terminated without error." -verbose
+		 	        } Else {
+		 	          #write-verbose "Process failed to terminate: $($Return.ReturnValue)" -verbose
+		 	        }
+		 	      }
+		 	      Catch {
+		 	        #write-verbose $_.Exception.Message -verbose
+		 	      }
+		 	    }
+		 	  } Else {
+		 	    If ($exitwhenfound) {
+		 	      #write-verbose "Process '$ProcessName' was not found. Giving up!" -verbose
+		 	      write-host "Process '$ProcessName' was not found. Giving up!"
+		 	    } Else {
+		 	      #write-verbose "Process '$ProcessName' was not found. Trying again!" -verbose
+		 	      write-host "Process '$ProcessName' was not found. Trying again!"
+		 	    }
+		 	  }
+		 	} Until ($exitwhenfound -eq $true)
+		}
+    }
+
+    function StopService
+    {
+        ForEach ($ServiceName in $TMServices)
+		{
+			$objService = Get-Service $ServiceName -ErrorAction SilentlyContinue
+			If ($objService)
+			{
+			 	write-host "Setting the '$ServiceName' service to manual start" -foregroundcolor DarkCyan
+		 	        #Write-Verbose "Setting the '$ServiceName' service to manual start..." -verbose
+				#Invoke-BISFService -ServiceName "$($ServiceName)" -Action Stop -StartType manual
+				# Possible results using the sc.exe command line tool:
+				#   [SC] ChangeServiceConfig2 SUCCESS
+				#   [SC] OpenSCManager FAILED 5:  Access is denied.
+				#   [SC] OpenSCManager FAILED 1722:  The RPC server is unavailable.
+				#   [SC] OpenService FAILED 1060:  The specified service does not exist as an installed service.
+				$result = sc.exe config $ServiceName start= demand
+				#write-verbose $result -verbose
+			} Else {
+ 				write-host "Service '$ServiceName' is not installed"
+			}
+		}
+    }
+
+Write-Host "forsøker å stoppe Trend" -ForegroundColor Yellow
+
+#kjører funskjonene
+TerminateProcess
+
+StopService
+
+#rydder opp i Guider i registry
+$reg_TM_string = "$HKLM_sw_x86\TrendMicro\PC-cillinNTCorp\CurrentVersion"
+	[array]$reg_TM_name = "GUID"
+
+foreach ($key in $reg_TM_name)
+		{
+			Write-host "delete specified registry items in $reg_TM_string..." -ForegroundColor Cya
+			Write-host "delete $key" -ForegroundColor Cyan 
+			Remove-ItemProperty -Path $reg_TM_string -Name $key -ErrorAction SilentlyContinue
+		}
+
+ # Stopping multiple instances of PCCNTmon.exe processes running on the Terminal (RDS) server
+    # https://success.trendmicro.com/solution/1102736
+    function UpdateINIFile
+    {
+      $inifile = "${env:ProgramFiles(x86)}\Trend Micro\OfficeScan Client\ofcscan.ini"
+      If (TEST-PATH -Path "$inifile") {
+        Write-host "Updating $inifile" -ForegroundColor DarkCyan
+        $inicontents = Get-Content "$inifile"
+        $inicontents = $inicontents | ForEach-Object {$_ -replace '^NT_RUN_KEY=.+$', "NT_RUN_KEY="}
+        $inicontents = $inicontents | ForEach-Object {$_ -replace '^NT_RUN_KEY_FILE_NAME=.+$', "NT_RUN_KEY_FILE_NAME="}
+        $inicontents | Set-Content $inifile
+        # Note that you will get an access denied error when writing back to the ofcscan.ini file if the
+        # services/processes are still running.
+      }
+    }
+    function DeleteRunValue
+    {
+      $keypath = "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run"
+      $value = "OfficeScanNT Monitor"
+      $IsValueMissing = (Get-ItemProperty $keypath).$value -eq $null
+      If ($IsValueMissing -eq $False) {
+        Write-host "Removing the $value value from the Run key"-ForegroundColor DarkCyan
+        Remove-ItemProperty -path $keypath -name $value
+      }
+    }
+
+#kjører funksjonene
+UpdateINIFile
+DeleteRunValue
+
+# Sletter Trend sertifikat
+ $certs = Get-ChildItem cert:\LocalMachine\my | where { $_.Subject –like ‘CN=ofcsslagent’ }
+ foreach ($cert in $certs) {
+ $store = Get-Item $cert.PSParentPath
+ $store.Open(‘ReadWrite’)
+ $store.Remove($cert)
+ $store.Close()
+ }
+
+Write-host 'Nvidia License server' -ForegroundColor Yellow
+#legger til lisensserveren for Nvidia Teslakort
+$Nlisens = "HKLM:\SOFTWARE\NVIDIA Corporation\Global\GridLicensing"
+
+New-Item -Path $Nlisens -Force
+New-ItemProperty -Path $Nlisens -name ServerAddress -value vs1teslalic401.lordx.org | out-null
+New-ItemProperty -Path $Nlisens -name BackupServerAddress -value vs2teslalic401.lordx.org | out-null
+New-ItemProperty -Path $Nlisens -name BackupServerPort -value 7070 | out-null
+New-ItemProperty -Path $Nlisens -name ServerPort -value 7070 | out-null
+New-ItemProperty -Path $Nlisens -PropertyType DWORD -name FeatureType -value 1 | out-null
+
+　
+Write-Host ' windows photoviewer' -ForegroundColor Yellow
+#Legger til windows photoviewer
+#Grab all .reg and pipe it into a reg import command
+Get-ChildItem $source\registry -Recurse | 
+foreach{
+ Start-Process -FilePath "C:\windows\system32\cmd.exe" -WindowStyle Minimized `
+ -ArgumentList @('/C REG IMPORT "' + $_.FullName + '"') -Wait
+}
+
+#kopiere inn startup script og lage scheduled task som kjører den
+Write-Host 'Copy StartupShudown folder' -ForegroundColor Yellow
+Copy-Item $Source\StartupShutdown $ProgramFiles\StartupShutdown -recurse
+
+Write-Host 'kopier ny meny' -ForegroundColor Yellow
+Remove-Item C:\temp\meny.ps1
+Copy-Item $Source\menypostsealing.ps1 'c:\temp\meny.ps1' -Force
+
+Write-Host 'StartupShudown tasks' -ForegroundColor Green
+$A = New-ScheduledtaskAction -execute "$ProgramFiles\StartupShutdown\startup.cmd"
+$T = New-ScheduledTaskTrigger -AtStartup 
+$S = New-ScheduledTaskSettingsSet
+$P = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$D = New-ScheduledTask -Action $A -Principal $P -Trigger $T -Settings $S
+Register-ScheduledTask Startup -InputObject $D
+
+<#$A = New-ScheduledtaskAction -execute "$ProgramFiles\StartupShutdown\Shutdown.cmd"
+$T = New-ScheduledTaskTrigger -daily -at 01:55
+$S = New-ScheduledTaskSettingsSet
+$P = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$D = New-ScheduledTask -Action $A -Principal $P -Trigger $T -Settings $S
+Register-ScheduledTask shutdown -InputObject $D #>
+
+#Optimalisering av image
+
+Write-Host 'Flush DNS cache' -ForegroundColor Yellow
+IPCONFIG /flushdns
+
+Write-Host 'Flush ARP table' -ForegroundColor Yellow
+ARP.exe -d *
+
+Write-Host "Disable Receive Side Scaling (RSS)" -ForegroundColor Yellow
+Start-Process -FilePath 'netsh.exe' -Argumentlist 'int tcp set global rss=disable' -Wait -WindowStyle Hidden
+
+# Turn on 8dot3name for App-v5
+Write-Host "Turn on 8dot3name for App-v5" -ForegroundColor Yellow
+fsutil.exe 8dot3name set C: 0
+fsutil.exe 8dot3name set 0
+
+Write-Host 'Remove All Windows features not used' -ForegroundColor Yellow
+# Remove All Windows features not used
+Get-WindowsFeature | Where-Object {$_.InstallState -eq 'Available'} | Uninstall-WindowsFeature -Remove
+
+Write-Host 'adobe services' -ForegroundColor Yellow
+$Servicelist="AdobeARMservice", "ctxProfile"
+Get-Service $Servicelist| Stop-Service -PassThru | Set-Service -StartupType Disabled
+
+　
+Write-Host 'Disable useless scheduled tasks' -ForegroundColor Yellow
+## Disable useless scheduled tasks
+	IF (($OSVersion -like "6.3*") -or ($OSVersion -like "10*"))
+	{
+				$ScheduledTasksList = @("AitAgent","ProgramDataUpdater","StartupAppTask","Proxy","UninstallDeviceTask","BthSQM","Consolidator","KernelCeipTask","Uploader","UsbCeip","Scheduled","Microsoft-Windows-DiskDiagnosticDataCollector","Microsoft-Windows-DiskDiagnosticResolver","WinSAT","HotStart","AnalyzeSystem","RacTask","MobilityManager","RegIdleBackup","FamilySafetyMonitor","FamilySafetyRefresh","AutoWake","GadgetManager","SessionAgent","SystemDataProviders","UPnPHostConfig","ResolutionHost","BfeOnServiceStartTypeChange","UpdateLibrary","ServerManager","Proxy","UninstallDeviceTask","Scheduled","Microsoft-Windows-DiskDiagnosticDataCollector","Microsoft-Windows-DiskDiagnosticResolver","WinSAT","MapsToastTask","MapsUpdateTask","ProcessMemoryDiagnosticEvents","RunFullMemoryDiagnostic","MNO Metadata Parser","AnalyzeSystem","MobilityManager","RegIdleBackup","CleanupOfflineContent","FamilySafetyMonitor","FamilySafetyRefresh","SR","UPnPHostConfig","ResolutionHost","UpdateLibrary","WIM-Hash-Management","WIM-Hash-Validation" )
+		ForEach ($ScheduledTaskList in $ScheduledTasksList)
+		{
+			$task = Get-ScheduledTask -TaskName $ScheduledTaskList -ErrorAction SilentlyContinue
+			IF ($task)
+			{
+
+				$TaskPathName = Get-ScheduledTask -TaskName $ScheduledTaskList | % {$_.TaskPath}
+				$PrepCommands +=  [pscustomobject]@{Order="$ordercnt"; Enabled="$true"; showmessage="N"; CLI="";                Description="Disable scheduled Task $ScheduledTaskList ";                                                    		   Command="Disable-ScheduledTask -Taskname $ScheduledTaskList -TaskPath '$TaskPathName' | Out-Null"};$ordercnt += 1
+			
+	}
+}
+}
+
+#Delete RDS Grace Period Registry Key
+Write-Host "Delete RDS Grace Period Registry Key" -ForegroundColor Yellow
+
+	$script_path = $MyInvocation.MyCommand.Path
+	$script_dir = Split-Path -Parent $script_path
+	$script_name = [System.IO.Path]::GetFileName($script_path)
+
+function enable-privilege {
+ param(
+  ## The privilege to adjust. This set is taken from
+  ## http://msdn.microsoft.com/en-us/library/bb530716(VS.85).aspx
+  [ValidateSet(
+   "SeAssignPrimaryTokenPrivilege", "SeAuditPrivilege", "SeBackupPrivilege",
+   "SeChangeNotifyPrivilege", "SeCreateGlobalPrivilege", "SeCreatePagefilePrivilege",
+   "SeCreatePermanentPrivilege", "SeCreateSymbolicLinkPrivilege", "SeCreateTokenPrivilege",
+   "SeDebugPrivilege", "SeEnableDelegationPrivilege", "SeImpersonatePrivilege", "SeIncreaseBasePriorityPrivilege",
+   "SeIncreaseQuotaPrivilege", "SeIncreaseWorkingSetPrivilege", "SeLoadDriverPrivilege",
+   "SeLockMemoryPrivilege", "SeMachineAccountPrivilege", "SeManageVolumePrivilege",
+   "SeProfileSingleProcessPrivilege", "SeRelabelPrivilege", "SeRemoteShutdownPrivilege",
+   "SeRestorePrivilege", "SeSecurityPrivilege", "SeShutdownPrivilege", "SeSyncAgentPrivilege",
+   "SeSystemEnvironmentPrivilege", "SeSystemProfilePrivilege", "SeSystemtimePrivilege",
+   "SeTakeOwnershipPrivilege", "SeTcbPrivilege", "SeTimeZonePrivilege", "SeTrustedCredManAccessPrivilege",
+   "SeUndockPrivilege", "SeUnsolicitedInputPrivilege")]
+  $Privilege,
+  ## The process on which to adjust the privilege. Defaults to the current process.
+  $ProcessId = $pid,
+  ## Switch to disable the privilege, rather than enable it.
+  [Switch] $Disable
+ )
+
+ ## Taken from P/Invoke.NET with minor adjustments.
+ $definition = @'
+ using System;
+ using System.Runtime.InteropServices;
+  
+ public class AdjPriv
+ {
+  [DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
+  internal static extern bool AdjustTokenPrivileges(IntPtr htok, bool disall,
+   ref TokPriv1Luid newst, int len, IntPtr prev, IntPtr relen);
+  
+  [DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
+  internal static extern bool OpenProcessToken(IntPtr h, int acc, ref IntPtr phtok);
+  [DllImport("advapi32.dll", SetLastError = true)]
+  internal static extern bool LookupPrivilegeValue(string host, string name, ref long pluid);
+  [StructLayout(LayoutKind.Sequential, Pack = 1)]
+  internal struct TokPriv1Luid
+  {
+   public int Count;
+   public long Luid;
+   public int Attr;
+  }
+  
+  internal const int SE_PRIVILEGE_ENABLED = 0x00000002;
+  internal const int SE_PRIVILEGE_DISABLED = 0x00000000;
+  internal const int TOKEN_QUERY = 0x00000008;
+  internal const int TOKEN_ADJUST_PRIVILEGES = 0x00000020;
+  public static bool EnablePrivilege(long processHandle, string privilege, bool disable)
+  {
+   bool retVal;
+   TokPriv1Luid tp;
+   IntPtr hproc = new IntPtr(processHandle);
+   IntPtr htok = IntPtr.Zero;
+   retVal = OpenProcessToken(hproc, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, ref htok);
+   tp.Count = 1;
+   tp.Luid = 0;
+   if(disable)
+   {
+    tp.Attr = SE_PRIVILEGE_DISABLED;
+   }
+   else
+   {
+    tp.Attr = SE_PRIVILEGE_ENABLED;
+   }
+   retVal = LookupPrivilegeValue(null, privilege, ref tp.Luid);
+   retVal = AdjustTokenPrivileges(htok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+   return retVal;
+  }
+ }
+'@
+
+　
+ $processHandle = (Get-Process -id $ProcessId).Handle
+ $type = Add-Type $definition -PassThru
+ $type[0]::EnablePrivilege($processHandle, $Privilege, $Disable)
+}
+
+　
+enable-privilege SeTakeOwnershipPrivilege 
+		#Take Ownership of Registry Key
+		$key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("SYSTEM\CurrentControlSet\Control\Terminal Server\RCM\GracePeriod",[Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,[System.Security.AccessControl.RegistryRights]::takeownership)
+		$acl = $key.GetAccessControl([System.Security.AccessControl.AccessControlSections]::None)
+		$me = [System.Security.Principal.NTAccount]"Builtin\Administratorer"
+		$acl.SetOwner($me)
+		$key.SetAccessControl($acl)
+
+		#Read current ACL and add rule for Builtin\Admnistrators
+		$acl = $key.GetAccessControl()
+		$rule = New-Object System.Security.AccessControl.RegistryAccessRule ("Builtin\Administratorer","FullControl","Allow")
+		$acl.SetAccessRule($rule)
+		$key.SetAccessControl($acl)
+		$key.Close()
+
+		#Search Timebomb Key and delete it
+		$items=$null
+		$item=$null
+
+		$Items = Get-Item "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\RCM\GracePeriod"
+		foreach ($item in $Items) {
+			if ($item.Property -like  "*TIMEBOMB*")  {
+				Remove-ItemProperty -path $Item.PSPath -Name $item.Property #-WhatIf
+			}
+		}
+
+#Slett Citrix cache
+Write-Host "Slett Citrix cache" -ForegroundColor Yellow
+$CTX_SYS32_CACHE_PATH = "C:\Program Files (x86)\Citrix\System32\Cache\*"
+Remove-Item -Path '$CTX_SYS32_CACHE_PATH' -Recurse -ErrorAction SilentlyContinue
+
+#Slett Software Distribution
+$Dir_SwDistriPath = "C:\Windows\SoftwareDistribution\Download\*"
+Remove-Item -Path $Dir_SwDistriPath -Recurse -ErrorAction SilentlyContinue
+
+# Disable Cortana
+Write-Host "Disable Cortana" -ForegroundColor Yellow
+New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\' -Name 'Windows Search' | Out-Null
+		New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' -Name 'AllowCortana' -PropertyType DWORD -Value '0' | Out-Null
+
+# 'Unmount DVD-drive'
+Write-Host 'UnMount DVD-drive' -ForegroundColor Yellow
+(gwmi Win32_cdromdrive).drive | %{$a = mountvol $_ /l;mountvol $_ /d;$a = $a.Trim()}
+
+# 'Sync time'
+Write-Host 'sync Windows time' -ForegroundColor Yellow
+W32TM /config /update
+W32TM /resync
+
+# 'GPupdate'
+Write-Host 'do GPUpdate' -ForegroundColor Yellow
+invoke-expression -command "ECHO N | GPUPDATE /FORCE"
+
+# 'KMS'
+# Lync KMS nøkkel
+REG ADD "HKLM\SOFTWARE\Microsoft\OfficeSoftwareProtectionPlatform" /v UserOperations /d 1 /t REG_DWORD /f /reg:64
+cscript.exe "C:\Program Files (x86)\Microsoft Office\Office15\ospp.vbs" /inpkey:2MG3G-3BNTT-3MFW9-KDQW3-TCK7R
+# REARM Office nøkkel
+Write-Host 'Rearm the KMS licenses on the server' -ForegroundColor Green
+$OSPPREARM_2k16x86 = "$ProgramFilesx86\Microsoft Office\Office16\OSPPREARM.EXE"
+#cscript.exe //B slmgr.vbs /rearm
+CSCRIPT $Windir\system32\slmgr.vbs /rearm
+
+Start-Process "$OSPPREARM_2k16x86"
+
+# 'RES database i registry'
+#PUSHD $SOURCE\Registry
+#Write-Host 'RES database i registry' -ForegroundColor Yellow
+#RegEdit /s pf_db_moby2.reg
+
+Write-Host 'Disable Windows Autoupdate' -ForegroundColor Yellow
+REG ADD "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update" /v AUOptions /d 1 /t REG_DWORD /f /reg:64
+REG ADD "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update" /v ScheduledInstallDay /d 0 /t REG_DWORD /f /reg:64
+REG ADD "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update" /v ScheduledInstallTime /d 3 /t REG_DWORD /f /reg:64
+REG ADD "HKLM\SYSTEM\CurrentControlSet\Services\wuauserv" /v Start /d 4 /t REG_DWORD /f /reg:64
+
+#sett lisensmode og -server i registry
+Set-ItemProperty "hklm:\SYSTEM\CurrentControlSet\Control\Terminal Server\RCM\Licensing Core\" -Name "LicensingMode" -Value 4  
+ Get-ItemProperty "hklm:\SYSTEM\CurrentControlSet\Control\Terminal Server\RCM\Licensing Core\" -Name "LicensingMode"  
+ New-Item "hklm:\SYSTEM\CurrentControlSet\Services\TermService\Parameters\LicenseServers"
+ New-ItemProperty "hklm:\SYSTEM\CurrentControlSet\Services\TermService\Parameters\LicenseServers" -Name SpecifiedLicenseServers -Value vkms401.lordx.org -PropertyType "MultiString"  
+ Get-ItemProperty "hklm:\SYSTEM\CurrentControlSet\Services\TermService\Parameters\LicenseServers" -Name SpecifiedLicenseServers   
+
+　
+Write-Host 'Disable Action Center' -ForegroundColor Yellow
+REG ADD "HKLM\SOFTWARE\MICROSOFT\WINDOWS\CURRENTVERSION\POLICIES\EXPLORER" /v HIDESCAHEALTH /d 1 /t REG_DWORD /f /reg:64
+
+Write-Host 'Move Cache' -ForegroundColor Green
+REG ADD HKLM\SOFTWARE\Wow6432Node\Citrix\Install /v CacheLocation /T REG_SZ /D D:\ /F /reg:64
+REG ADD HKLM\SOFTWARE\Wow6432Node\Citrix\Install /v LSWSXICALocation /T REG_SZ /D D:\ /F /reg:64
+
+Write-Host 'bcdedit' -ForegroundColor Yellow
+Start-Process 'bcdedit.exe' -Verb runAs -ArgumentList '/set {default} bootstatuspolicy ignoreallfailures' | Out-Null
+Start-Process 'bcdedit.exe' -Verb runAs -ArgumentList '/set nx AlwaysOff' | Out-Null
+
+Write-Host ‘fjerner Configmgr’ -ForegroundColor Green
+# Stopper Configmgr Tjenesten
+Get-Service ccmexec | where-object {$_.status -eq "running"} | Stop-Service -PassThru | Set-Service -StartupType Disabled 
+# Sletter SMSCFG.ini
+ Remove-Item -Path ${env:WinDir}'\SMSCFG.ini' -Force -ErrorAction SilentlyContinue
+ Invoke-Expression "WMIC /NAMESPACE:\\root\ccm\locationservices Path TrustedRootKey DELETE"
+ # Sletter Alle SMS sertifikater
+ $certs = Get-ChildItem cert:\LocalMachine\SMS | where { $_.Subject –like ‘CN=SMS*’ }
+ foreach ($cert in $certs) {
+ $store = Get-Item $cert.PSParentPath
+ $store.Open(‘ReadWrite’)
+ $store.Remove($cert)
+ $store.Close()
+ }
+
+Write-Host 'Event-logs' -ForegroundColor Green
+Write-Host 'Clear Event logs' -ForegroundColor Yellow
+Get-EventLog -List | ForEach-Object {Clear-EventLog -LogName $_.Log} -ErrorAction Inquire
+Write-Host 'Move Application Event-log' -ForegroundColor Yellow
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Eventlog\Application /v MaxSize /d 65536 /t REG_DWORD /F /reg:64
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Eventlog\Application /v File /T REG_EXPAND_SZ /D D:\Logs\Application.evtx /F /reg:64
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Eventlog\Application /v Flags /T REG_DWORD /D 1 /F /reg:64
+Write-Host 'Move Security Event-log' -ForegroundColor Yellow
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Eventlog\Security /v MaxSize /d 65536 /t REG_DWORD /F /reg:64
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Eventlog\Security /v File /T REG_EXPAND_SZ /D D:\Logs\Security.evtx /F /reg:64
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Eventlog\Security /v Flags /T REG_DWORD /D 1 /F /reg:64
+Write-Host 'Move System Event-log' -ForegroundColor Yellow
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Eventlog\System /v MaxSize /d 65536 /t REG_DWORD /f /reg:64
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Eventlog\System /v File /T REG_EXPAND_SZ /D D:\Logs\System.evtx /F /reg:64
+REG ADD HKLM\SYSTEM\CurrentControlSet\Services\Eventlog\System /v Flags /T REG_DWORD /D 1 /F /reg:64
+# 'Event-logs'
+
+#setter IE Enhanced Security Configuration av for bruker og admin
+function Disable-IEESC
+{
+$AdminKey = “HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}”
+$UserKey = “HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}”
+Set-ItemProperty -Path $AdminKey -Name “IsInstalled” -Value 0
+Set-ItemProperty -Path $UserKey -Name “IsInstalled” -Value 0
+Write-Host “IE Enhanced Security Configuration (ESC) has been disabled.” -ForegroundColor Green
+}
+Disable-IEESC
+
+#LOGON UI SUPPRESSION – No Black Screen
+Write-host "login UI suppression" -ForegroundColor Yellow
+$citrixvda= "hklm:\SOFTWARE\Citrix\Citrix Virtual Desktop Agent"
+New-ItemProperty -Path $citrixvda -PropertyType DWORD -name DisableLogonUISuppression -Value 0 | out-null
+
+# Setter FSlogix registry nøkler og starter windows search -
+Set-Service -name "wsearch" -startuptype automatic
+Start-Service -name "wsearch"
+
+Write-host "FSlogix oppsett" -ForegroundColor Yellow
+If(Test-Path -Path "C:\Program Files\FSLogix\Apps")
+{ Write-Host 'fslogix oppsett' -ForegroundColor Yellow
+$fslogix = "HKLM:\Software\Policies\FSLogix"
+$fslogixapps = "HKLM:\Software\FSLogix\Apps"
+$fslogixODFC = "HKLM:\Software\FSLogix\ODFC"
+$fslogixPoliciesODFC = "HKLM\Software\Policies\FSLogix\ODFC"
+
+New-Item -Path $fslogix -Force
+New-ItemProperty -Path $fslogix -PropertyType DWORD -name ConcurrentUserSessions -value 1 | out-null
+New-ItemProperty -Path $fslogix -PropertyType DWORD -name RoamSearch -value 1 | out-null
+
+New-Item -Path $fslogixapps -Force
+New-ItemProperty -Path $fslogixapps -PropertyType DWORD -name RoamSearch -value 2 | out-null
+
+New-Item -Path $fslogixODFC -Force
+New-ItemProperty -Path $fslogixODFC -PropertyType DWORD -name RoamSearch -value 2 | out-null
+
+New-Item -Path $fslogixPoliciesODFC -Force
+New-ItemProperty -Path $fslogixPoliciesODFC -PropertyType DWORD -name RoamSearch -value 2 | out-null
+
+}
+
+Write-host "hide PVS status Icon" -ForegroundColor Yellow
+New-Item -Path 'HKLM:\SOFTWARE\CITRIX\ProvisioningServices\Status' -Force | out-null; 
+Set-ItemProperty -Path 'HKLM:\SOFTWARE\CITRIX\ProvisioningServices\Status' -Name 'ShowIcon' -Value '0' -Type DWORD
+
+New-Item -Path 'HKLM:\SOFTWARE\CITRIX\ProvisioningServices\StatusTray' -Force | out-null; 
+Set-ItemProperty -Path 'HKLM:\SOFTWARE\CITRIX\ProvisioningServices\StatusTray' -Name 'ShowIcon' -Value '0' -Type DWORD
+
+　
+　
+If(-not(Test-Path -Path $seal))
+  {
+Write-host 'Sett registry så maskinen ikke konverteres på nytt'
+New-Item -Path $seal -Force
+New-ItemProperty -Path $seal -name Konvertert -value "$date"
+
+Write-Host 'Format E:' -ForegroundColor Green
+$drive = gwmi win32_volume -Filter "DriveLetter = 'E:'"
+$drive.Format("NTFS",$True,"4096","OSDISK",$False)
+
+$dstasjon = Test-Path d: -IsValid 
+If($dstasjon -eq $true){
+Write-Host 'Format D:' -ForegroundColor Green
+$drive = gwmi win32_volume -Filter "DriveLetter = 'D:'"
+$drive.Format("NTFS",$True,"4096","OSDISK",$False)
+}
+  
+Write-Host 'Delete safely and zero out files' -ForegroundColor Green
+PUSHD $Windir
+REG ADD HKCU\Software\Sysinternals\SDelete /V EulaAccepted /T REG_DWORD /D 1 /F /reg:64
+invoke-expression -command "$Source\sdelete.exe -c -z"
+# 'Delete safely and zero out files'
+
+Write-host 'fjerner checkdisk fra start'
+$dirty = fsutil dirty query c:
+IF($dirty -eq 'Volume - c: is NOT Dirty') {
+    write-host 'ren og pen' -ForegroundColor Yellow}
+Else {
+    write-host 'oi så møkkete' -ForegroundColor Blue
+
+        chkntfs /x c:
+}
+
+Write-Host 'Convert Image to PVS - Dette tar lang tid! 2 til 4 timer' -ForegroundColor Green
+Get-Volume | ft -AutoSize
+Start-Process "$ProgramFiles\Citrix\Provisioning Services\p2pvs.exe" -ArgumentList "P2PVS $Systemdrive /L /AutoFit" -workingdirectory "$ProgramFiles\citrix\Provisioning Services" -Wait
+#Start-Process "$ProgramFiles\Citrix\Provisioning Services\p2pvs.exe"
+}
+Write-Host 'Move XenMaster back to OU: MasterImage'  -ForegroundColor Green
+get-adcomputer $ComputerName | Move-ADObject -TargetPath "OU=MasterImage,OU=Xendesktop7,OU=Xendesktop,DC=statsbygg,DC=pro"
+Get-Volume | ft -AutoSize
+
+　
+#Repair-Volume -DriveLetter e -OfflineScanAndFix
+
+#defrag av e: stasjonen
+Write-Host 'Defrag av e:'
+Optimize-Volume E -Verbose
+
+　
+Write-host 'fjerner checkdisk fra start'
+$dirty = fsutil dirty query e:
+IF($dirty -eq 'Volume - e: is NOT Dirty') {
+    write-host 'ren og pen' -ForegroundColor Yellow}
+Else {
+    write-host 'oi så møkkete' -ForegroundColor Blue
+
+        chkntfs /x e:
+}
+
+#Powershell -executionpolicy bypass -file "\\statsbygg\dfsroot\Distribusjon\Charlie\Citrix\XD7\Xendesktop_Sealing\uniquieID.ps1"
+
+<#
+$startInfo = New-Object System.Diagnostics.ProcessStartInfo
+$startInfo.FileName = "shutdown.exe"
+$startInfo.Arguments = "/s /f /t 60"
+
+$process = New-Object System.Diagnostics.Process
+$process.StartInfo = $startInfo
+$process.Start() | Out-Null
+$process.WaitForExit()
+#>
+
+Write-Host 'SEAL-script finished. Shutdown Xen-Master'  -ForegroundColor Green
+Function Show-Menu {
+ 
+Param(
+ [Parameter(Position=0,Mandatory=$True,HelpMessage="Enter your menu text")]
+ [ValidateNotNullOrEmpty()]
+ [string]$Menu,
+ [Parameter(Position=1)]
+ [ValidateNotNullOrEmpty()]
+ [string]$Title=”Menu”,
+ [switch]$ClearScreen
+ )
+ 
+if ($ClearScreen) {Clear-Host}
+ 
+#build the menu prompt
+ $menuPrompt=$title
+ #add a return
+ $menuprompt+=”`n”
+ #add an underline
+ $menuprompt+=”-”*$title.Length
+ $menuprompt+=”`n”
+ #add the menu
+ $menuPrompt+=$menu
+ 
+Read-Host -Prompt $menuprompt
+ 
+} #end function
+ 
+#define a menu here string
+ $menu=@”
+
+1. Avslutt serveren
+
+2. Fikse UniqeID på disk
+ 
+Q. Quit
+ 
+Select a task by number or Q to quit
+“@
+ 
+#Keep looping and running the menu until the user selects Q (or q).
+ Do {
+ #use a Switch construct to take action depending on what menu choice
+ #is selected.
+ Switch (Show-Menu $menu ” XenMaster er ferdig ” ){
+
+ 
+"1" {shutdown /s /f /t 10}
+
+"2" {Powershell -executionpolicy bypass -file "\\lordxorg\dfsroot\Distribusjon\Charlie\Citrix\XD7\Xendesktop_Sealing\uniquieID.ps1"}
+
+"Q" {Write-Host “Terminating Script” -ForegroundColor Yellow
+ Return
+ }
+ Default {Write-Warning “Invalid Choice. Try again.”
+sleep -milliseconds 750}
+ } #switch
+ }While ($True)
+
+ Write-Host -NoNewLine "Press any key to continue..."
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+#PAUSE
+#REM REG ADD HKLM\  /v Flags /T REG_SZ /D  /F /reg:64
+ 
