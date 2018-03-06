@@ -1,0 +1,91 @@
+ $xenvdaversion = (get-item 'C:\Program Files\Citrix\Virtual Desktop Agent\BrokerAgent.exe').VersionInfo
+$xenPVSversion = (get-item 'C:\Program Files\Citrix\Provisioning Services\P2PVS.exe').VersionInfo
+$Edrive = Get-Partition | where driveletter -eq E 
+$Giga = [math]::truncate($edrive.size / 1GB)
+$sealdate = Get-ItemProperty "HKLM:\software\Sicra\reseal"
+$appvpakker = Get-AppvClientpackage -all | Measure-Object
+$os = Get-WmiObject win32_operatingsystem
+$uptime = (Get-Date) - $os.ConvertToDateTime($os.LastBootUpTime)
+Write-host ("Siste boot: " + $os.ConvertToDateTime($os.LastBootUpTime)) -ForegroundColor Yellow
+Write-host ("Oppetid: " + $uptime.Days + " Dager " + $uptime.Hours + " Timer " + $uptime.Minutes + " minutter") -ForegroundColor Yellow
+
+Get-AppvClientpackage -all |sort name | Format-Table -AutoSize -property name | Out-File c:\temp\appv.txt
+ 
+Write-host 'Denne serveren ble laget den' $sealdate.Konvertert -ForegroundColor Cyan
+
+Write-Host 'Installert Citrix VDA versjon er' $xenvdaversion.ProductVersion -ForegroundColor Cyan
+
+Write-Host 'Installert Citrix PVS versjon er' $xenpvsversion.ProductVersion -ForegroundColor Cyan
+
+Write-host 'Det er' $appvpakker.count ' Appv-pakker på serveren' -ForegroundColor Cyan
+
+　
+Function Show-Menu {
+
+Param(
+ [Parameter(Position=0,Mandatory=$True,HelpMessage="Enter your menu text")]
+ [ValidateNotNullOrEmpty()]
+ [string]$Menu,
+ [Parameter(Position=1)]
+ [ValidateNotNullOrEmpty()]
+ [string]$Title=”Sealing av server”,
+ [switch]$ClearScreen
+ )
+ 
+if ($ClearScreen) {Clear-Host}
+ 
+#build the menu prompt
+ $menuPrompt=$title
+ #add a return
+ $menuprompt+=”`n”
+ #add an underline
+ $menuprompt+=”-”*$title.Length
+ $menuprompt+=”`n”
+ #add the menu
+ $menuPrompt+=$menu
+ 
+Read-Host -Prompt $menuprompt
+ 
+}  #end function
+ 
+#define a menu here string
+ $menu=@”
+1. Synkroniser App-v pakker
+ 
+2. Kjør startupskript igjen
+
+3. Refresh Menyen/infoen
+
+4. Liste over installerte app-v pakker
+
+5. Liste over brukere som er pålogget
+ 
+Q. Quit.
+ 
+Select a task by number or Q to quit
+“@
+ 
+#Keep looping and running the menu until the user selects Q (or q).
+ Do {
+ #use a Switch construct to take action depending on what menu choice
+ #is selected.
+ Switch (Show-Menu $menu ”Hva vil du?” ){
+
+"1" {Get-AppvPublishingServer | Sync-AppvPublishingServer -global -force}
+
+"2" {Start-Process -FilePath 'C:\Program Files\StartupShutdown\StartUp.cmd' -Wait}
+
+"3" {c:\temp\meny.ps1}
+
+"4" {Get-AppvClientPackage -all | Sort-Object name | ft name,packageID}
+
+"5" {query user| Sort-Object Username}
+
+"Q" {Write-Host “Terminating Script” -ForegroundColor Yellow
+ Return
+ }
+ Default {Write-Warning “Invalid Choice. Try again.”
+sleep -milliseconds 750}
+ } #switch
+ }While ($True)
+ 
