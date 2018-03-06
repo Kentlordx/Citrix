@@ -1,0 +1,11 @@
+ Write-host 'Nvidia License server' -ForegroundColor Yellow
+#legger til lisensserveren for Nvidia Teslakort
+$Nlisens = "HKLM:\SOFTWARE\NVIDIA Corporation\Global\GridLicensing"
+
+New-Item -Path $Nlisens -Force
+New-ItemProperty -Path $Nlisens -name ServerAddress -value lic.lordx.org | out-null
+New-ItemProperty -Path $Nlisens -name BackupServerAddress -value lic2.lordx.org  | out-null
+New-ItemProperty -Path $Nlisens -name BackupServerPort -value 7070 | out-null
+New-ItemProperty -Path $Nlisens -name ServerPort -value 7070 | out-null
+New-ItemProperty -Path $Nlisens -PropertyType DWORD -name FeatureType -value 1 | out-null
+ 
