@@ -1,0 +1,34 @@
+ #laster inn Citrix powershell module
+asnp citrix.broker.admin.v2
+#for å finne catalognavn kjør: Get-BrokerCatalog | ft name 
+$Catalogname = R720-XenApp7
+#Henter alle maskiner i katalogen med status i Citrix.
+$machines = Get-BrokerMachine -CatalogName $Catalogname -MaxRecordCount 800
+foreach ($machine in $machines) {
+$vm = $machine.MachineName
+$powerstatus = $machine.PowerState
+$registerstatus = $machine.RegistrationState
+$sessionstatus = $machine.SessionCount
+$LastDeregistrationTime = $machine.LastDeregistrationTime
+$time = Get-Date
+#sjekker om det mer enn 15 minuter siden de ble unregisterd og ikke har kommet opp igjen, eller om de er skrudd av. For så å forsøke å restarte eller skru de på igjen.
+If (($powerstatus -eq "On") -and ($registerstatus -eq "Unregistered") -and ($sessionstatus -eq 0) )
+{
+   If ($LastDeregistrationTime)
+   {
+     $diff = $time-$LastDeregistrationTime 
+     If([int] $diff.TotalMinutes -gt 15)
+     {  
+        New-BrokerHostingPowerAction -MachineName $vm -Action Reset
+        write-host "restart problematic machines.."
+        echo "Restartet Date:$time machine:$vm" >> C:\scripts\restartlog.txt
+     }
+      } 
+}
+}
+ If ($powerstatus -eq "Off")
+ {
+        New-BrokerHostingPowerAction -MachineName $vm -Action TurnOn
+        write-host "Skru på problematic machines.."
+        echo "Skru på Date:$time machine:$vm" >> C:\scripts\restartlog.txt
+     } 
