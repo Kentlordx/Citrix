@@ -1,7 +1,8 @@
+ #script laget basert på https://support.citrix.com/article/CTX224259
  #laster inn Citrix powershell module
 asnp citrix.broker.admin.v2
 #for å finne catalognavn kjør: Get-BrokerCatalog | ft name 
-$Catalogname = 
+$Catalogname = ""
 #Henter alle maskiner i katalogen med status i Citrix.
 $machines = Get-BrokerMachine -CatalogName $Catalogname -MaxRecordCount 800
 foreach ($machine in $machines) {
